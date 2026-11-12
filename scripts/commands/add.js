@@ -1,92 +1,126 @@
+
 const axios = require("axios");
+
+const API_BASE = process.env.RANDOM_API_BASE || "https://joy-random-api-40-seven.vercel.app";
 
 module.exports.config = {
   name: "add",
-  version: "1.0.2",
-  credits: "Joy",
+  version: "1.0.0",
   permission: 0,
-  description: "Reply to video and add to API",
+  credits: "JOY",
+  description: "Reply করা ভিডিও Random API তে add করো",
+  prefix: true,
   category: "media",
-  usages: "/add <name> (reply to video)",
-  prefix: true
+  usages: "[name] (reply to video)",
+  cooldowns: 5,
 };
 
 module.exports.run = async function ({ api, event, args }) {
+  let waitMsg = null;
+
   try {
-    if (!args[0]) {
+    const name = args[0];
+
+    if (!name) {
       return api.sendMessage(
-        "❌ Usage: Reply to a video and type /add <name>",
-        event.threadID
+        "╭╼|━━━━━━━━━━━━━━|╾╮\n" +
+        "📦 ভিডিওর নাম লিখুন!\n" +
+        "প্রথমে ভিডিওতে reply দিন।\n" +
+        "তারপর লিখুন: add funny\n" +
+        "╰╼|━━━━━━━━━━━━━━|╾╯",
+        event.threadID,
+        event.messageID
       );
     }
 
-    if (!event.messageReply) {
+    const replyMsg = event.messageReply;
+
+    if (!replyMsg) {
       return api.sendMessage(
-        "❌ You must reply to a video.",
-        event.threadID
+        "❌ প্রথমে কোনো ভিডিওতে reply দিন!",
+        event.threadID,
+        event.messageID
       );
     }
 
-    const reply = event.messageReply;
-    const videoAttachment = reply.attachments.find(a => a.type === "video");
+    const attachments = replyMsg.attachments || [];
 
-    if (!videoAttachment || !videoAttachment.url) {
-      return api.sendMessage(
-        "❌ No video found in replied message.",
-        event.threadID
-      );
-    }
-
-    /* 🔹 STEP 1: Load API base URL from GitHub */
-    const apiJson = await axios.get(
-      "https://raw.githubusercontent.com/JUBAED-AHMED-JOY/Joy/main/api.json"
+    const media = attachments.find(item =>
+      ["video", "animated_image"].includes(item.type)
     );
 
-    const BASE_URL = apiJson.data.add;
-    if (!BASE_URL) {
+    if (!media || !media.url) {
       return api.sendMessage(
-        "❌ rndm API not found in api.json",
-        event.threadID
+        "❌ Reply করা মেসেজে কোনো ভিডিও পাওয়া যায়নি!",
+        event.threadID,
+        event.messageID
       );
     }
 
-    const name = args[0].toLowerCase();
-    const videoUrl = videoAttachment.url;
+    waitMsg = await new Promise(resolve => {
+      api.sendMessage(
+        "⏳ ভিডিও API তে add হচ্ছে, অপেক্ষা করুন...",
+        event.threadID,
+        (err, info) => resolve(info || null)
+      );
+    });
 
-    api.sendMessage("⏳ Sending video to API...", event.threadID);
-
-    /* 🔹 STEP 2: Add endpoint inside command */
-    const apiRes = await axios.post(
-      `${BASE_URL}/add`,
-      { name, videoUrl },
+    const res = await axios.post(
+      API_BASE + "/api/add",
       {
-        headers: { "Content-Type": "application/json" },
-        timeout: 300000
+        name: name,
+        url: media.url
+      },
+      {
+        timeout: 120000,
+        validateStatus: () => true
       }
     );
 
-    if (!apiRes.data.success) {
+    const data = res.data || {};
+
+    if (waitMsg && waitMsg.messageID) {
+      api.unsendMessage(waitMsg.messageID, () => {});
+    }
+
+    if (!data.status) {
       return api.sendMessage(
-        `❌ API Error: ${apiRes.data.msg}`,
-        event.threadID
+        "❌ ভিডিও Add হয়নি!\n" +
+        (data.error || "HTTP " + res.status),
+        event.threadID,
+        event.messageID
       );
     }
 
-    const data = apiRes.data.data;
-
-    api.sendMessage(
-      `✅ Video Added Successfully!
-📛 Name: ${data.name}
-🔢 Serial: ${data.serial}
-🔗 Link: ${data.url}
-📦 Source: ${data.source}`,
-      event.threadID
+    return api.sendMessage(
+      "╭╼|━━━━━━━━━━━━━━|╾╮\n" +
+      "✅ ভিডিও সফলভাবে Add হয়েছে!\n\n" +
+      `📌 Name: ${data.name || name}\n` +
+      `🔗 Link: ${data.url || "N/A"}\n` +
+      `📊 এই নামে ভিডিও: ${data.count || 0} টি\n` +
+      `📈 Total Video: ${data.totalVideos || data.total || 0} টি\n` +
+      "╰╼|━━━━━━━━━━━━━━|╾╯",
+      event.threadID,
+      event.messageID
     );
 
-  } catch (err) {
-    api.sendMessage(
-      `❌ Error:\n${err.response?.data?.msg || err.message}`,
-      event.threadID
+  } catch (e) {
+    if (waitMsg && waitMsg.messageID) {
+      api.unsendMessage(waitMsg.messageID, () => {});
+    }
+
+    console.error("Add Error:", e.message);
+
+    const error =
+      e.response?.data?.error ||
+      e.message ||
+      "Unknown Error";
+
+    return api.sendMessage(
+      "❌ ভিডিও Add করতে সমস্যা হয়েছে!\n" +
+      error.slice(0, 300),
+      event.threadID,
+      event.messageID
     );
   }
 };
