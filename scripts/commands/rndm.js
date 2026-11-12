@@ -1,114 +1,171 @@
-const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
 
-const MAX_VIDEO_SIZE = 25 * 1024 * 1024; // 25MB
+const axios = require("axios");
+const { Readable } = require("stream");
+
+const API_BASE = "https://joy-random-api-40-seven.vercel.app";
+
+function extFrom(url) {
+  const clean = url.split("?")[0].split("#")[0];
+  const last = clean.split("/").pop() || "";
+  const ext = (last.split(".").pop() || "").toLowerCase();
+
+  return /^[a-z0-9]{2,5}$/.test(ext) ? ext : "mp4";
+}
+
+function mimeForExt(ext) {
+  if (ext === "webm") return "video/webm";
+  if (ext === "mov") return "video/quicktime";
+  if (ext === "mkv") return "video/x-matroska";
+  if (ext === "avi") return "video/x-msvideo";
+  return "video/mp4";
+}
 
 module.exports.config = {
   name: "rndm",
-  version: "1.1.1",
-  credits: "Joy",
-  permssion: 0,
-  description: "Get random video by name",
+  version: "1.0.0",
+  permission: 0,
+  credits: "JOY",
+  description: "Random API থেকে ভিডিও পাঠাবে",
+  prefix: true,
   category: "media",
-  usages: "/rndm <name>",
-  prefix: true
+  usages: "[name]",
+  cooldowns: 5,
 };
 
 module.exports.run = async function ({ api, event, args }) {
   try {
-    if (!args[0]) {
+    const name = args.join(" ").trim();
+
+    if (!name) {
       return api.sendMessage(
-        "❌ Usage: /rndm <name>",
-        event.threadID
+        "╭╼|━━━━━━━━━━━━━━|╾╮\n" +
+        "❌ ভিডিওর নাম লিখুন!\n\n" +
+        "ব্যবহার: rndm <name>\n" +
+        "উদাহরণ: rndm joy\n" +
+        "╰╼|━━━━━━━━━━━━━━|╾╯",
+        event.threadID,
+        event.messageID
       );
     }
 
-    const name = args.join(" ").toLowerCase();
+    const apiUrl =
+      `${API_BASE}/api/video?name=${encodeURIComponent(name)}`;
 
-    /* 🔹 STEP 1: Load base API from GitHub */
-    const apiJson = await axios.get(
-      "https://raw.githubusercontent.com/JUBAED-AHMED-JOY/Joy/main/api.json"
-    );
-
-    const BASE_URL = apiJson.data.rndm;
-    if (!BASE_URL) {
-      return api.sendMessage(
-        "❌ rndm API not found in api.json",
-        event.threadID
-      );
-    }
-
-    /* 🔹 STEP 2: Call random endpoint */
-    const res = await axios.get(
-      `${BASE_URL}/random?name=${encodeURIComponent(name)}`,
-      { timeout: 120000 }
-    );
-
-    if (!res.data || !res.data.success || !res.data.data) {
-      return api.sendMessage(
-        `❌ No video found for "${name}"`,
-        event.threadID
-      );
-    }
-
-    const video = res.data.data;
-    const videoUrl = video.url;
-
-    /* 🔹 STEP 3: Download video */
-    const tempPath = path.join(__dirname, `rndm_${Date.now()}.mp4`);
-    const writer = fs.createWriteStream(tempPath);
-
-    const response = await axios({
-      url: videoUrl,
-      method: "GET",
-      responseType: "stream",
-      timeout: 120000
+    const res = await axios.get(apiUrl, {
+      timeout: 30000,
+      validateStatus: () => true
     });
 
-    let downloaded = 0;
-    let tooLarge = false;
+    const data = res.data || {};
 
-    response.data.on("data", (chunk) => {
-      downloaded += chunk.length;
-      if (downloaded > MAX_VIDEO_SIZE) {
-        tooLarge = true;
-        response.data.destroy();
+    if (res.status !== 200 || !data.url) {
+      return api.sendMessage(
+        `❌ "${name}" নামে কোনো ভিডিও পাওয়া যায়নি!`,
+        event.threadID,
+        event.messageID
+      );
+    }
+
+    // Video count information
+    const countInfo = [];
+
+    if (typeof data.count === "number") {
+      countInfo.push(`📊 এই নামে ভিডিও: ${data.count} টি`);
+    }
+
+    if (typeof data.total === "number") {
+      countInfo.push(`📁 মোট নাম: ${data.total} টি`);
+    }
+
+    if (typeof data.totalVideos === "number") {
+      countInfo.push(`📈 মোট ভিডিও: ${data.totalVideos} টি`);
+    }
+
+    const countText = countInfo.length
+      ? "\n" + countInfo.join("\n")
+      : "";
+
+    let videoUrl = data.url;
+
+    // Viewer link থেকে original video URL বের করা
+    if (/joy-upload-api\.vercel\.app\/v\//i.test(videoUrl)) {
+      try {
+        const pageRes = await axios.get(videoUrl, {
+          timeout: 30000,
+          validateStatus: () => true
+        });
+
+        const html =
+          typeof pageRes.data === "string" ? pageRes.data : "";
+
+        const match = html.match(
+          /https:\/\/api\.telegram\.org\/file\/bot[^\s"'<>]+/
+        );
+
+        if (match) {
+          videoUrl = match[0];
+        } else {
+          return api.sendMessage(
+            `🎬 ${data.name || name}${countText}\n🔗 ${data.url}`,
+            event.threadID,
+            event.messageID
+          );
+        }
+      } catch (e) {
+        return api.sendMessage(
+          `🎬 ${data.name || name}${countText}\n🔗 ${data.url}`,
+          event.threadID,
+          event.messageID
+        );
       }
+    }
+
+    // Download video
+    const dl = await axios.get(videoUrl, {
+      responseType: "arraybuffer",
+      timeout: 120000,
+      maxContentLength: 50 * 1024 * 1024,
+      validateStatus: () => true
     });
 
-    response.data.pipe(writer);
-
-    await new Promise((resolve, reject) => {
-      writer.on("finish", resolve);
-      writer.on("error", reject);
-    });
-
-    /* 🔹 STEP 4: Size check */
-    if (tooLarge) {
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    if (
+      dl.status !== 200 ||
+      !dl.data ||
+      !dl.data.byteLength
+    ) {
       return api.sendMessage(
-        `🎬 ${video.name}\n📦 Size: >25MB\n🔗 ${videoUrl}`,
-        event.threadID
+        "❌ ভিডিও Download করা যায়নি!",
+        event.threadID,
+        event.messageID
       );
     }
 
-    /* 🔹 STEP 5: Send video */
-    api.sendMessage(
+    const ext = extFrom(videoUrl);
+    const buffer = Buffer.from(dl.data);
+    const stream = Readable.from(buffer);
+
+    const caption =
+      `╭╼|━━━━━━━━━━━━━━|╾╮\n` +
+      `🎬 Name: ${data.name || name}\n` +
+      `${countText}\n` +
+      `╰╼|━━━━━━━━━━━━━━|╾╯`;
+
+    return api.sendMessage(
       {
-        body: `🎬 ${video.name}\n📦 ${(downloaded / 1024 / 1024).toFixed(2)} MB`,
-        attachment: fs.createReadStream(tempPath)
+        body: caption,
+        attachment: stream
       },
       event.threadID,
-      () => {
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-      }
+      event.messageID
     );
 
-  } catch (err) {
-    api.sendMessage(
-      `❌ Error: ${err.response?.data?.msg || err.message}`,
-      event.threadID
+  } catch (e) {
+    console.error("Rndm Error:", e.message);
+
+    return api.sendMessage(
+      "❌ ভিডিও আনতে সমস্যা হয়েছে!\nআবার চেষ্টা করুন।",
+      event.threadID,
+      event.messageID
     );
   }
 };
