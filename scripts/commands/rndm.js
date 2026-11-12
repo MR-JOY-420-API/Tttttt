@@ -1,6 +1,7 @@
 
 const axios = require("axios");
-const { Readable } = require("stream");
+const fs = require("fs");
+const path = require("path");
 
 const API_BASE = "https://joy-random-api-40-seven.vercel.app";
 
@@ -12,27 +13,21 @@ function extFrom(url) {
   return /^[a-z0-9]{2,5}$/.test(ext) ? ext : "mp4";
 }
 
-function mimeForExt(ext) {
-  if (ext === "webm") return "video/webm";
-  if (ext === "mov") return "video/quicktime";
-  if (ext === "mkv") return "video/x-matroska";
-  if (ext === "avi") return "video/x-msvideo";
-  return "video/mp4";
-}
-
 module.exports.config = {
   name: "rndm",
-  version: "1.0.0",
+  version: "1.0.2",
   permission: 0,
   credits: "JOY",
   description: "Random API থেকে ভিডিও পাঠাবে",
   prefix: true,
   category: "media",
   usages: "[name]",
-  cooldowns: 5,
+  cooldowns: 5
 };
 
 module.exports.run = async function ({ api, event, args }) {
+  let tempFile = null;
+
   try {
     const name = args.join(" ").trim();
 
@@ -48,13 +43,14 @@ module.exports.run = async function ({ api, event, args }) {
       );
     }
 
-    const apiUrl =
-      `${API_BASE}/api/video?name=${encodeURIComponent(name)}`;
-
-    const res = await axios.get(apiUrl, {
-      timeout: 30000,
-      validateStatus: () => true
-    });
+    // API request
+    const res = await axios.get(
+      `${API_BASE}/api/video?name=${encodeURIComponent(name)}`,
+      {
+        timeout: 30000,
+        validateStatus: () => true
+      }
+    );
 
     const data = res.data || {};
 
@@ -66,20 +62,17 @@ module.exports.run = async function ({ api, event, args }) {
       );
     }
 
-    // Video count information
+    // Count information
     const countInfo = [];
 
-    if (typeof data.count === "number") {
+    if (typeof data.count === "number")
       countInfo.push(`📊 এই নামে ভিডিও: ${data.count} টি`);
-    }
 
-    if (typeof data.total === "number") {
+    if (typeof data.total === "number")
       countInfo.push(`📁 মোট নাম: ${data.total} টি`);
-    }
 
-    if (typeof data.totalVideos === "number") {
+    if (typeof data.totalVideos === "number")
       countInfo.push(`📈 মোট ভিডিও: ${data.totalVideos} টি`);
-    }
 
     const countText = countInfo.length
       ? "\n" + countInfo.join("\n")
@@ -87,37 +80,30 @@ module.exports.run = async function ({ api, event, args }) {
 
     let videoUrl = data.url;
 
-    // Viewer link থেকে original video URL বের করা
+    // Viewer link resolve
     if (/joy-upload-api\.vercel\.app\/v\//i.test(videoUrl)) {
-      try {
-        const pageRes = await axios.get(videoUrl, {
-          timeout: 30000,
-          validateStatus: () => true
-        });
+      const pageRes = await axios.get(videoUrl, {
+        timeout: 30000,
+        validateStatus: () => true
+      });
 
-        const html =
-          typeof pageRes.data === "string" ? pageRes.data : "";
+      const html = typeof pageRes.data === "string"
+        ? pageRes.data
+        : "";
 
-        const match = html.match(
-          /https:\/\/api\.telegram\.org\/file\/bot[^\s"'<>]+/
-        );
+      const match = html.match(
+        /https:\/\/api\.telegram\.org\/file\/bot[^\s"'<>]+/
+      );
 
-        if (match) {
-          videoUrl = match[0];
-        } else {
-          return api.sendMessage(
-            `🎬 ${data.name || name}${countText}\n🔗 ${data.url}`,
-            event.threadID,
-            event.messageID
-          );
-        }
-      } catch (e) {
+      if (!match) {
         return api.sendMessage(
           `🎬 ${data.name || name}${countText}\n🔗 ${data.url}`,
           event.threadID,
           event.messageID
         );
       }
+
+      videoUrl = match[0];
     }
 
     // Download video
@@ -128,11 +114,7 @@ module.exports.run = async function ({ api, event, args }) {
       validateStatus: () => true
     });
 
-    if (
-      dl.status !== 200 ||
-      !dl.data ||
-      !dl.data.byteLength
-    ) {
+    if (dl.status !== 200 || !dl.data || !dl.data.byteLength) {
       return api.sendMessage(
         "❌ ভিডিও Download করা যায়নি!",
         event.threadID,
@@ -140,30 +122,60 @@ module.exports.run = async function ({ api, event, args }) {
       );
     }
 
-    const ext = extFrom(videoUrl);
     const buffer = Buffer.from(dl.data);
-    const stream = Readable.from(buffer);
+    const ext = extFrom(videoUrl);
+
+    // Temporary video file
+    tempFile = path.join(
+      __dirname,
+      `rndm_${Date.now()}.${ext}`
+    );
+
+    fs.writeFileSync(tempFile, buffer);
 
     const caption =
-      `╭╼|━━━━━━━━━━━━━━|╾╮\n` +
+      "╭╼|━━━━━━━━━━━━━━|╾╮\n" +
       `🎬 Name: ${data.name || name}\n` +
-      `${countText}\n` +
-      `╰╼|━━━━━━━━━━━━━━|╾╯`;
+      countText + "\n" +
+      "╰╼|━━━━━━━━━━━━━━|╾╯";
+
+    // FCA attachment must be an array
+    const attachment = [fs.createReadStream(tempFile)];
 
     return api.sendMessage(
       {
         body: caption,
-        attachment: stream
+        attachment: attachment
       },
       event.threadID,
+      (err, info) => {
+        if (tempFile) {
+          fs.unlink(tempFile, () => {});
+          tempFile = null;
+        }
+
+        if (err) {
+          console.error("Rndm Send Error:", err);
+
+          return api.sendMessage(
+            "❌ ভিডিও পাঠানো যায়নি!\n" + err.message,
+            event.threadID
+          );
+        }
+      },
       event.messageID
     );
 
   } catch (e) {
-    console.error("Rndm Error:", e.message);
+    console.error("Rndm Error:", e.stack || e.message);
+
+    if (tempFile && fs.existsSync(tempFile)) {
+      fs.unlink(tempFile, () => {});
+    }
 
     return api.sendMessage(
-      "❌ ভিডিও আনতে সমস্যা হয়েছে!\nআবার চেষ্টা করুন।",
+      "❌ ভিডিও আনতে সমস্যা হয়েছে!\n" +
+      (e.message || "Unknown Error").slice(0, 200),
       event.threadID,
       event.messageID
     );
